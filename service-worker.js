@@ -1,23 +1,35 @@
 /* Scribbly Service Worker */
-const CACHE_VERSION = 'v1';
+const CACHE_VERSION = 'v2';
 const STATIC_CACHE = `scribbly-static-${CACHE_VERSION}`;
-const OFFLINE_FALLBACK_PAGE = '/index.html';
+const OFFLINE_FALLBACK_PAGE = './index.html';
 
 const PRECACHE_ASSETS = [
-  '/',
-  '/index.html',
-  '/style.css',
-  '/script.js',
-  '/icon.png',
-  '/manifest.json'
+  './',
+  './index.html',
+  './style.css',
+  './script.js',
+  './icon.png',
+  './manifest.json'
 ];
 
 self.addEventListener('install', (event) => {
-  event.waitUntil(
-    caches.open(STATIC_CACHE)
-      .then((cache) => cache.addAll(PRECACHE_ASSETS))
-      .then(() => self.skipWaiting())
-  );
+  event.waitUntil((async () => {
+    try {
+      const cache = await caches.open(STATIC_CACHE);
+      await Promise.all(
+        PRECACHE_ASSETS.map(async (asset) => {
+          try {
+            const url = new URL(asset, self.location);
+            const req = new Request(url, { cache: 'reload' });
+            const res = await fetch(req);
+            if (res && res.ok) await cache.put(req, res.clone());
+          } catch (_) { /* ignore individual asset failures */ }
+        })
+      );
+    } finally {
+      self.skipWaiting();
+    }
+  })());
 });
 
 self.addEventListener('activate', (event) => {

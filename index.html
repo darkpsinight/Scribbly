@@ -140,7 +140,15 @@
     installBtn && installBtn.addEventListener('click', async () => {
       if (isAppInstalled()) { updateInstallVisibility(); return; }
       if (!deferredPrompt) {
-        // No prompt available; do nothing (some browsers require menu action)
+        // No prompt available; show brief hint
+        const label = installBtn.querySelector('.label');
+        const prev = label ? label.textContent : '';
+        if (label) label.textContent = 'Install not available';
+        installBtn.disabled = true;
+        setTimeout(() => {
+          if (label) label.textContent = prev || 'Install App';
+          installBtn.disabled = false;
+        }, 3000);
         return;
       }
       installBtn.disabled = true;
