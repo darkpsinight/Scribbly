@@ -9,7 +9,124 @@
   <link rel="stylesheet" href="style.css" />
   <link rel="icon" type="image/png" href="icon.png">
   <link rel="apple-touch-icon" href="icon.png">
-  <link rel="manifest" href="manifest.json" />
+  <link rel="manifest" href="manifest.json?v=2" />
+  <!-- Install & Debug buttons -->
+  <button id="installBtn" style="position:fixed;top:8px;right:8px;padding:6px 10px;background:#CC1A7D;color:#fff;border:none;border-radius:4px;font-size:14px;cursor:pointer;display:none;">Install Scribbly</button>
+  <button id="checkSwBtn" style="position:fixed;top:8px;right:120px;padding:6px 10px;background:#444;color:#fff;border:none;border-radius:4px;font-size:14px;cursor:pointer;">Check SW</button>
+  <script>
+    let deferredPrompt;
+    const installBtn = document.getElementById('installBtn');
+    const checkSwBtn = document.getElementById('checkSwBtn');
+
+    async function registerSW() {
+      if ('serviceWorker' in navigator) {
+        try {
+          const reg = await navigator.serviceWorker.register('./service-worker.js',{scope:'./'});
+          await reg.update();
+          console.log('[SW] registered & updated');
+        } catch (e) { console.error('[SW] reg error',e); }
+      }
+    }
+    registerSW();
+
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      deferredPrompt = e;
+      console.log('[PWA] beforeinstallprompt captured – prompt ready');
+      installBtn.style.display = 'block';
+    });
+
+    // Fallback: if Chrome never fires the event, still show button after first interaction
+    let interactionDone = false;
+    function tryShowInstall() {
+      if (interactionDone) return;
+      interactionDone = true;
+      if (!deferredPrompt) {
+        console.warn('[PWA] Chrome did not fire beforeinstallprompt; faking it');
+        installBtn.style.display = 'block';
+      }
+    }
+    window.addEventListener('click', tryShowInstall, { once: true });
+    window.addEventListener('input', tryShowInstall, { once: true });
+    installBtn.addEventListener('click', async () => {
+      if (deferredPrompt) {
+        deferredPrompt.prompt();
+        const { outcome } = await deferredPrompt.userChoice;
+        if (outcome === 'accepted') installBtn.style.display = 'none';
+        deferredPrompt = null;
+      }
+    });
+    checkSwBtn.addEventListener('click', () => {
+      registerSW();
+      location.reload();           // refresh audit
+    });
+  </script>
+  <!-- DEBUG: live audit panel -->
+  <script>
+    window.addEventListener('DOMContentLoaded', () => {
+      const panel = document.createElement('div');
+      panel.id = 'pwa-audit';
+      panel.style.cssText = 'position:fixed;bottom:4px;left:4px;background:#0009;color:#0f0;padding:4px 6px;font:11px/1.2 monospace;z-index:9999;white-space:pre;';
+      document.body.appendChild(panel);
+      function tick() {
+        const ok = (s) => s ? '✅' : '❌';
+        const sw = navigator.serviceWorker.controller;
+        const https = location.protocol === 'https:' || location.hostname === 'localhost';
+        fetch('manifest.json?v=' + Date.now())
+          .then(r => r.json())
+          .then(m => {
+            const icons = m.icons.map(i => i.src).join(', ');
+            const standalone = m.display === 'standalone';
+            panel.textContent =
+              `Secure context: ${ok(https)}\n` +
+              `Manifest link: ${ok(true)}\n` +
+              `Display standalone: ${ok(standalone)}\n` +
+              `Icon link(s): ${icons}\n` +
+              `Service worker active: ${ok(!!sw)}\n` +
+              `beforeinstallprompt fired: ${ok(window._biPromptFired)}`;
+          })
+          .catch(() => panel.textContent = 'Manifest 404/invalid');
+      }
+      window._biPromptFired = false;
+      window.addEventListener('beforeinstallprompt', () => { window._biPromptFired = true; tick(); });
+      tick();
+      setInterval(tick, 1000);
+    });
+  </script>
+  <script>
+    // Audit manifest & icons
+    window.addEventListener('load', () => {
+      fetch('manifest.json')
+        .then(r => r.json())
+        .then(j => console.log('[PWA] manifest JSON:', JSON.stringify(j, null, 2)))
+        .catch(e => console.error('[PWA] manifest 404 or invalid JSON', e));
+
+      // Check actual icon.png size
+    const img = new Image();
+    img.onload = () => console.log(`[PWA] icon.png natural size: ${img.naturalWidth}×${img.naturalHeight}`);
+    img.src = 'icon.png?' + Date.now();
+
+    // Live audit: always re-fetch manifest and list actual icons
+    (async () => {
+      try {
+        const res = await fetch('manifest.json?v=' + Date.now());
+        const json = await res.json();
+        console.log('[PWA] live manifest:', JSON.stringify(json, null, 2));
+        const icons = json.icons.map(i => i.src).join(', ');
+        console.log('[PWA] manifest icons listed:', icons);
+        // Wipe any cached icon list the panel might use
+        localStorage.removeItem('scribbly-debug-icons');
+        localStorage.removeItem('scribbly-debug-cache');
+      } catch (e) {
+        console.error('[PWA] manifest 404 or invalid', e);
+      }
+    })();
+    });
+  </script>
+</head>  <!-- DEBUG: inline manifest to verify content -->
+  <script type="application/json" id="manifestDebug">
+    {"display":"standalone","start_url":"./","scope":"./","icons":[{"src":"icon.png","sizes":"192x192","type":"image/png"},{"src":"icon.png","sizes":"512x512","type":"image/png","purpose":"maskable"}]}
+  </script>
 </head>
 <body>
   <header class="app-header">
@@ -88,82 +205,6 @@
     </div>
   </div>
   <script src="script.js"></script>
-  <script>
-    // Register service worker
-    if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => {
-        navigator.serviceWorker.register('./service-worker.js').catch(console.error);
-      });
-    }
 
-    // Install prompt handling and visibility based on install status
-    let deferredPrompt;
-    const installBtn = document.getElementById('installBtn');
-
-    function isAppInstalled() {
-      const standalone = window.matchMedia('(display-mode: standalone)').matches || (navigator.standalone === true);
-      const flag = localStorage.getItem('scribbly.installed') === 'true';
-      return standalone || flag;
-    }
-
-    function updateInstallVisibility() {
-      if (!installBtn) return;
-      installBtn.hidden = isAppInstalled();
-      installBtn.disabled = false;
-      const label = installBtn.querySelector('.label');
-      if (label) label.textContent = 'Install App';
-      installBtn.classList.remove('primary');
-    }
-
-    window.addEventListener('beforeinstallprompt', (e) => {
-      e.preventDefault();
-      deferredPrompt = e;
-      updateInstallVisibility();
-    });
-
-    window.addEventListener('appinstalled', () => {
-      localStorage.setItem('scribbly.installed', 'true');
-      if (!installBtn) return;
-      const label = installBtn.querySelector('.label');
-      if (label) label.textContent = 'Installed ✓';
-      installBtn.classList.add('primary');
-      installBtn.hidden = false; // show success feedback briefly even if we will hide later
-      installBtn.disabled = true;
-      setTimeout(() => {
-        if (label) label.textContent = 'Install App';
-        installBtn.classList.remove('primary');
-        installBtn.disabled = false;
-        updateInstallVisibility(); // hide because installed
-      }, 3000);
-    });
-
-    installBtn && installBtn.addEventListener('click', async () => {
-      if (isAppInstalled()) { updateInstallVisibility(); return; }
-      if (!deferredPrompt) {
-        // No prompt available; show brief hint
-        const label = installBtn.querySelector('.label');
-        const prev = label ? label.textContent : '';
-        if (label) label.textContent = 'Install not available';
-        installBtn.disabled = true;
-        setTimeout(() => {
-          if (label) label.textContent = prev || 'Install App';
-          installBtn.disabled = false;
-        }, 3000);
-        return;
-      }
-      installBtn.disabled = true;
-      try {
-        await deferredPrompt.prompt();
-      } catch (_) {
-        // ignore
-      } finally {
-        installBtn.disabled = false;
-        deferredPrompt = null;
-      }
-    });
-
-    // Set initial button visibility on load
-    updateInstallVisibility();
-  </script>
 </body>
 </html>

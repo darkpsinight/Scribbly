@@ -1,5 +1,5 @@
 /* Scribbly Service Worker */
-const CACHE_VERSION = 'v2';
+const CACHE_VERSION = 'v3';
 const STATIC_CACHE = `scribbly-static-${CACHE_VERSION}`;
 const OFFLINE_FALLBACK_PAGE = './index.html';
 
@@ -44,12 +44,30 @@ self.addEventListener('activate', (event) => {
         })
       );
       await self.clients.claim();
+      // Ensure offline fallback is cached immediately
+      const cache = await caches.open(STATIC_CACHE);
+      await cache.add(OFFLINE_FALLBACK_PAGE);
     })()
   );
 });
 
 // Strategy helpers
+function isCacheableRequest(request) {
+  try {
+    if (request.method !== 'GET') return false;
+    const url = new URL(request.url);
+    if (!/^https?:$/.test(url.protocol)) return false; // skip chrome-extension, moz-extension, data, blob, file, etc.
+    if (url.origin !== self.location.origin) return false; // same-origin only
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 async function cacheFirst(request) {
+  if (!isCacheableRequest(request)) {
+    return fetch(request);
+  }
   const cache = await caches.open(STATIC_CACHE);
   const cached = await cache.match(request);
   if (cached) return cached;
@@ -63,6 +81,9 @@ async function cacheFirst(request) {
 }
 
 async function networkFirst(request) {
+  if (!isCacheableRequest(request)) {
+    return fetch(request);
+  }
   const cache = await caches.open(STATIC_CACHE);
   try {
     const response = await fetch(request);
@@ -77,6 +98,7 @@ async function networkFirst(request) {
 
 self.addEventListener('fetch', (event) => {
   const { request } = event;
+  const url = new URL(request.url);
 
   // Handle navigation: serve app shell when offline
   if (request.mode === 'navigate') {
@@ -87,7 +109,7 @@ self.addEventListener('fetch', (event) => {
           return networkResponse;
         } catch (_) {
           const cache = await caches.open(STATIC_CACHE);
-          const cached = await cache.match(OFFLINE_FALLBACK_PAGE);
+          const cached = await cache.match(OFFLINE_FALLBACK_PAGE, { ignoreSearch: true });
           return cached || new Response('<h1>Offline</h1>', { headers: { 'Content-Type': 'text/html' } });
         }
       })()
@@ -97,13 +119,16 @@ self.addEventListener('fetch', (event) => {
 
   // Static assets: cache-first
   const dest = request.destination;
-  if (['style', 'script', 'image'].includes(dest)) {
+  if (['style', 'script', 'image', 'font'].includes(dest) && isCacheableRequest(request)) {
     event.respondWith(cacheFirst(request));
     return;
   }
 
   // Default: network-first
-  event.respondWith(networkFirst(request));
+  if (isCacheableRequest(request)) {
+    event.respondWith(networkFirst(request));
+  }
+  // Otherwise, let the browser handle non-cacheable requests normally.
 });
 
 // Optional: background sync skeleton (queue processing can postMessage to trigger)

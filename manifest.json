@@ -1,17 +1,25 @@
 {
   "name": "Scribbly — Notes",
   "short_name": "Scribbly",
-  "id": "scribbly.app",
-  "start_url": "./?source=pwa",
+  "id": "./",
+  "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "theme_color": "#CC1A7D",
   "background_color": "#ffffff",
   "description": "Write, save, and manage notes. Offline-first, fast, and installable.",
   "icons": [
-    { "src": "icon.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "icon.png", "sizes": "256x256", "type": "image/png", "purpose": "any" },
-    { "src": "icon.png", "sizes": "384x384", "type": "image/png", "purpose": "any" },
-    { "src": "icon.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
   ]
 }
