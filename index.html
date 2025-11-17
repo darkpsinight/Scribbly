@@ -5,8 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Scribbly — Save Your Notes</title>
   <meta name="description" content="Scribbly: write, save, and delete notes with localStorage. Online note website application" />
+  <meta name="theme-color" content="#CC1A7D" />
   <link rel="stylesheet" href="style.css" />
   <link rel="icon" type="image/png" href="icon.png">
+  <link rel="apple-touch-icon" href="icon.png">
+  <link rel="manifest" href="manifest.json" />
 </head>
 <body>
   <header class="app-header">
@@ -23,6 +26,9 @@
           </svg>
         </span>
         <span class="label">New Note</span>
+      </button>
+      <button id="installBtn" class="btn" hidden>
+        <span class="label">Install App</span>
       </button>
     </div>
   </header>
@@ -48,7 +54,7 @@
   </main>
 
   <footer class="app-footer">
-    <small>LocalStorage-powered. Data stays in your browser.</small>
+    <small>Works offline. Installable. Your notes stay on this device.</small>
   </footer>
 
   <div id="contextMenu" class="context-menu" hidden>
@@ -66,19 +72,90 @@
         <button id="aboutClose" class="modal-close" type="button" aria-label="Close">×</button>
       </div>
       <div class="modal-body">
-        <p>Scribbly is a lightweight notes app that stores your data in your browser storage. No accounts, no servers — your notes stay local.</p>
-        <p>How to use:</p>
+        <p>Scribbly is a simple lightweight notes app that works even when you’re offline.</p>
+        <p>Your notes are saved on this device. No account, no cloud.</p>
+        <p>Tips:</p>
         <ul>
-          <li>Click <strong>New Note</strong> to create a note.</li>
-          <li>Click a note in the list to open it. Edits autosave after you type.</li>
+          <li>Click <strong>New Note</strong> to start writing.</li>
+          <li>Select a note to open it; changes save automatically.</li>
           <li>Use the <strong>search</strong> box to filter notes by title or content.</li>
-          <li>Right-click a note to <strong>Pin/Unpin</strong> or <strong>Delete</strong>.</li>
-          <li>Pinned notes show a 📌 icon and stay at the top.</li>
+          <li>Right‑click a note to <strong>Pin</strong> or <strong>Delete</strong>.</li>
+          <li><strong>Install:</strong> Click <em>Install App</em> (when shown) or use your browser’s “Install”, “Add to Home Screen”.</li>
+          <li><strong>Offline:</strong> The app works without internet. The header shows your status.</li>
         </ul>
-        <p>Your data remains on this device. Clearing browser storage will remove your notes.</p>
+        <p>If you clear your browser’s site data, your notes will be removed.</p>
       </div>
     </div>
   </div>
   <script src="script.js"></script>
+  <script>
+    // Register service worker
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./service-worker.js').catch(console.error);
+      });
+    }
+
+    // Install prompt handling and visibility based on install status
+    let deferredPrompt;
+    const installBtn = document.getElementById('installBtn');
+
+    function isAppInstalled() {
+      const standalone = window.matchMedia('(display-mode: standalone)').matches || (navigator.standalone === true);
+      const flag = localStorage.getItem('scribbly.installed') === 'true';
+      return standalone || flag;
+    }
+
+    function updateInstallVisibility() {
+      if (!installBtn) return;
+      installBtn.hidden = isAppInstalled();
+      installBtn.disabled = false;
+      const label = installBtn.querySelector('.label');
+      if (label) label.textContent = 'Install App';
+      installBtn.classList.remove('primary');
+    }
+
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      deferredPrompt = e;
+      updateInstallVisibility();
+    });
+
+    window.addEventListener('appinstalled', () => {
+      localStorage.setItem('scribbly.installed', 'true');
+      if (!installBtn) return;
+      const label = installBtn.querySelector('.label');
+      if (label) label.textContent = 'Installed ✓';
+      installBtn.classList.add('primary');
+      installBtn.hidden = false; // show success feedback briefly even if we will hide later
+      installBtn.disabled = true;
+      setTimeout(() => {
+        if (label) label.textContent = 'Install App';
+        installBtn.classList.remove('primary');
+        installBtn.disabled = false;
+        updateInstallVisibility(); // hide because installed
+      }, 3000);
+    });
+
+    installBtn && installBtn.addEventListener('click', async () => {
+      if (isAppInstalled()) { updateInstallVisibility(); return; }
+      if (!deferredPrompt) {
+        // No prompt available; do nothing (some browsers require menu action)
+        return;
+      }
+      installBtn.disabled = true;
+      try {
+        await deferredPrompt.prompt();
+      } catch (_) {
+        // ignore
+      } finally {
+        installBtn.disabled = false;
+        deferredPrompt = null;
+      }
+    });
+
+    // Set initial button visibility on load
+    updateInstallVisibility();
+  </script>
 </body>
 </html>

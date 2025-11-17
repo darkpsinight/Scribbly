@@ -39,6 +39,7 @@ body {
 .brand .logo { font-size: 1.25rem; }
 .brand h1 { font-size: 1.1rem; margin: 0; }
 
+
 .app {
   display: grid;
   grid-template-columns: 300px 1fr;

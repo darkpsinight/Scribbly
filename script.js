@@ -1,5 +1,12 @@
 const STORAGE_KEY = 'scribbly.notes';
 const LAST_SELECTED_KEY = 'scribbly.lastSelected';
+// IndexedDB config
+const DB_NAME = 'scribbly-db';
+const DB_VERSION = 1;
+const KV_STORE = 'kv';
+const QUEUE_STORE = 'queue';
+const SYNC_ENABLED = false; // set true when backend exists
+const REMOTE_API_BASE = ''; // e.g., 'https://example.com/api'
 
 const els = {
   newNoteBtn: document.getElementById('newNoteBtn'),
@@ -23,21 +30,137 @@ const state = {
   filter: '',
   dirty: false,
   contextTargetId: null,
+  installDeferred: null,
 };
 
-function loadNotes() {
+// IndexedDB helpers
+let _dbPromise;
+function getDB() {
+  if (_dbPromise) return _dbPromise;
+  _dbPromise = new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(KV_STORE)) db.createObjectStore(KV_STORE);
+      if (!db.objectStoreNames.contains(QUEUE_STORE)) db.createObjectStore(QUEUE_STORE, { autoIncrement: true });
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+  return _dbPromise;
+}
+
+async function idbGet(key) {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    const notes = raw ? JSON.parse(raw) : [];
-    if (!Array.isArray(notes)) return [];
-    return notes.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+    const db = await getDB();
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(KV_STORE, 'readonly');
+      const store = tx.objectStore(KV_STORE);
+      const req = store.get(key);
+      req.onsuccess = () => resolve(req.result ?? null);
+      req.onerror = () => reject(req.error);
+    });
+  } catch (_) {
+    return null;
+  }
+}
+
+async function idbSet(key, value) {
+  try {
+    const db = await getDB();
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(KV_STORE, 'readwrite');
+      const store = tx.objectStore(KV_STORE);
+      const req = store.put(value, key);
+      req.onsuccess = () => resolve(true);
+      req.onerror = () => reject(req.error);
+    });
+  } catch (_) {
+    return false;
+  }
+}
+
+async function queueAction(action) {
+  try {
+    const db = await getDB();
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(QUEUE_STORE, 'readwrite');
+      const store = tx.objectStore(QUEUE_STORE);
+      const req = store.add({ ...action, queuedAt: new Date().toISOString() });
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  } catch (_) {
+    return null;
+  }
+}
+
+async function getQueuedActions() {
+  try {
+    const db = await getDB();
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(QUEUE_STORE, 'readonly');
+      const store = tx.objectStore(QUEUE_STORE);
+      const actions = [];
+      const req = store.openCursor();
+      req.onsuccess = (e) => {
+        const cursor = e.target.result;
+        if (cursor) {
+          actions.push({ id: cursor.key, ...cursor.value });
+          cursor.continue();
+        } else {
+          resolve(actions);
+        }
+      };
+      req.onerror = () => reject(req.error);
+    });
   } catch (_) {
     return [];
   }
 }
 
+async function clearQueuedAction(id) {
+  try {
+    const db = await getDB();
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(QUEUE_STORE, 'readwrite');
+      const store = tx.objectStore(QUEUE_STORE);
+      const req = store.delete(id);
+      req.onsuccess = () => resolve(true);
+      req.onerror = () => reject(req.error);
+    });
+  } catch (_) {
+    return false;
+  }
+}
+
+async function loadNotes() {
+  // Prefer IndexedDB, fallback to localStorage
+  try {
+    const idbNotes = await idbGet(STORAGE_KEY);
+    const notes = Array.isArray(idbNotes)
+      ? idbNotes
+      : (() => {
+          try {
+            const raw = localStorage.getItem(STORAGE_KEY);
+            const parsed = raw ? JSON.parse(raw) : [];
+            return Array.isArray(parsed) ? parsed : [];
+          } catch (_) { return []; }
+        })();
+    return notes.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+  } catch (_) {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (_) { return []; }
+  }
+}
+
 function saveNotes() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state.notes));
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state.notes)); } catch (_) {}
+  // Fire-and-forget IDB write
+  idbSet(STORAGE_KEY, state.notes).catch(() => {});
 }
 
 function generateId() {
@@ -119,15 +242,18 @@ function saveCurrentNote() {
     state.notes.unshift(note);
     state.currentNoteId = id;
     localStorage.setItem(LAST_SELECTED_KEY, id);
+    if (!navigator.onLine) queueAction({ type: 'upsert', note }).catch(() => {});
   } else {
     const idx = state.notes.findIndex(n => n.id === state.currentNoteId);
     if (idx !== -1) {
-      state.notes[idx] = {
+      const updated = {
         ...state.notes[idx],
         title: title || 'Untitled',
         content,
         updatedAt: now,
       };
+      state.notes[idx] = updated;
+      if (!navigator.onLine) queueAction({ type: 'upsert', note: updated }).catch(() => {});
     }
   }
   saveNotes();
@@ -143,6 +269,7 @@ function deleteCurrentNote() {
   if (idx === -1) return;
   state.notes.splice(idx, 1);
   saveNotes();
+  if (!navigator.onLine) queueAction({ type: 'delete', id }).catch(() => {});
   const last = localStorage.getItem(LAST_SELECTED_KEY);
   if (last === id) localStorage.removeItem(LAST_SELECTED_KEY);
   newNote();
@@ -351,16 +478,39 @@ function purgeSeededTasks() {
   } catch (_) { /* ignore */ }
 }
 
-function init() {
-  state.notes = loadNotes();
+async function init() {
+  state.notes = await loadNotes();
   purgeSeededTasks();
   initWelcomeNote();
   renderNotesList();
   restoreLastSelected();
   bindEvents();
+  // Try to sync queued actions when back online
+  window.addEventListener('online', () => {
+    syncQueuedActions().catch(() => {});
+    // Attempt Background Sync if supported
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.ready
+        .then((reg) => reg.sync && reg.sync.register('scribbly-sync'))
+        .catch(() => {});
+    }
+  });
 }
 
 init();
+
+// Lazy prefetch non-critical assets during idle time
+try {
+  const idle = window.requestIdleCallback || ((fn) => setTimeout(fn, 800));
+  idle(() => {
+    try {
+      const img = new Image();
+      img.src = 'icon.png';
+      // Touch manifest for warm cache
+      fetch('manifest.json').catch(() => {});
+    } catch (_) { /* ignore */ }
+  });
+} catch (_) { /* ignore */ }
 
 function showContextMenu(x, y, id) {
   state.contextTargetId = id;
@@ -384,4 +534,53 @@ function hideContextMenu() {
   const menu = els.contextMenu;
   if (!menu) return;
   menu.hidden = true;
+}
+
+// Sync logic stubs
+async function syncQueuedActions() {
+  if (!SYNC_ENABLED) return true; // backend not configured
+  if (!navigator.onLine) return false;
+  const actions = await getQueuedActions();
+  for (const a of actions) {
+    try {
+      if (a.type === 'upsert') {
+        await syncNoteUpsert(a.note);
+      } else if (a.type === 'delete') {
+        await syncNoteDelete(a.id);
+      }
+      await clearQueuedAction(a.id);
+    } catch (err) {
+      // keep in queue; stop processing on first failure to avoid thrashing
+      break;
+    }
+  }
+}
+
+async function syncNoteUpsert(note) {
+  // Example remote sync; implement with your backend
+  const url = `${REMOTE_API_BASE}/notes/${encodeURIComponent(note.id)}`;
+  const res = await fetch(url, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(note)
+  });
+  if (!res.ok) throw new Error('Failed to sync note');
+  // Conflict resolution placeholder: compare timestamps
+  const remote = await res.json().catch(() => null);
+  if (remote && remote.updatedAt && remote.updatedAt !== note.updatedAt) {
+    const localTime = new Date(note.updatedAt).getTime();
+    const remoteTime = new Date(remote.updatedAt).getTime();
+    if (remoteTime > localTime) {
+      // Remote newer: keep remote and store local as a duplicate to avoid loss
+      const copy = { ...note, id: generateId(), title: `${note.title} (conflict copy)` };
+      state.notes.unshift(copy);
+      saveNotes();
+    }
+  }
+}
+
+async function syncNoteDelete(id) {
+  const url = `${REMOTE_API_BASE}/notes/${encodeURIComponent(id)}`;
+  const res = await fetch(url, { method: 'DELETE' });
+  if (!res.ok) throw new Error('Failed to delete note remotely');
 }
